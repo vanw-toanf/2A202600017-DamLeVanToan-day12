@@ -23,5 +23,5 @@ jobs:
         run: railway up --detach --service $RAILWAY_SERVICE_NAME
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_SERVICE_NAME: ${{ secrets.RAILWAY_SERVICE_NAME }} # Hoặc thay thành tên service của bạn, vd: RAILWAY_SERVICE_NAME: "web"
+          RAILWAY_SERVICE_NAME: ${{ secrets.RAILWAY_SERVICE_NAME }} 
         working-directory: ./06-lab-complete  # Trỏ vào đúng thư mục code
