@@ -432,7 +432,7 @@ python test_stateless.py
 
 > Xem source code trong `06-lab-complete/`
 
-**Public URL:** https://lab12-production-bae7.up.railway.app
+**Public URL:** https://2a202600017-damlevantoan-day12-06.up.railway.app/
 
 **Checklist:**
 - [x] Agent trả lời câu hỏi qua REST API
