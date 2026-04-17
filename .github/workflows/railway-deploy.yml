@@ -23,5 +23,5 @@ jobs:
         run: railway up --detach --service "lab12-06"
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_PROJECT_ID: "a82d50d2-397a-4fdf-bef8-c4828744c153"
+          RAILWAY_PROJECT_ID: "92e5f5f2-03ac-43c4-9fdf-9a82d4037a45"
         working-directory: ./06-lab-complete  # Trỏ vào đúng thư mục code
