@@ -20,8 +20,7 @@ jobs:
         run: npm i -g @railway/cli
 
       - name: Deploy to Railway
-        run: railway up --detach --service $RAILWAY_SERVICE_NAME
+        run: railway up --detach --service "lab12-06"
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_SERVICE_NAME: "4f351325-8fb3-41c4-9bc5-447e0d0d0193"
         working-directory: ./06-lab-complete  # Trỏ vào đúng thư mục code
