@@ -6,7 +6,7 @@ on:
       - main
       - master
     paths:
-      - '06-lab-complete/**'  # Chỉ trigger khi có thay đổi trong thư mục lab 06
+      - '06-lab-complete/**'
 
 jobs:
   deploy:
