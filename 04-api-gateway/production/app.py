@@ -199,4 +199,4 @@ if __name__ == "__main__":
     print("  student / demo123  (10 req/min, $1/day budget)")
     print("  teacher / teach456 (100 req/min, $1/day budget)")
     print(f"\nDocs: http://localhost:{port}/docs\n")
-    uvicorn.run(app, host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)

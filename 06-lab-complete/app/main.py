@@ -20,7 +20,6 @@ import signal
 import logging
 import json
 from datetime import datetime, timezone
-from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Security, Depends, Request, Response
@@ -28,11 +27,14 @@ from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
+import redis
 
 from app.config import settings
 
 # Mock LLM (thay bằng OpenAI/Anthropic khi có API key)
 from utils.mock_llm import ask as llm_ask
+
+redis_client = redis.Redis.from_url(settings.redis_url or "redis://localhost:6379", decode_responses=True)
 
 # ─────────────────────────────────────────────────────────
 # Logging — JSON structured
@@ -49,39 +51,46 @@ _request_count = 0
 _error_count = 0
 
 # ─────────────────────────────────────────────────────────
-# Simple In-memory Rate Limiter
+# Redis Rate Limiter (Sliding Window)
 # ─────────────────────────────────────────────────────────
-_rate_windows: dict[str, deque] = defaultdict(deque)
-
 def check_rate_limit(key: str):
     now = time.time()
-    window = _rate_windows[key]
-    while window and window[0] < now - 60:
-        window.popleft()
-    if len(window) >= settings.rate_limit_per_minute:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Rate limit exceeded: {settings.rate_limit_per_minute} req/min",
-            headers={"Retry-After": "60"},
-        )
-    window.append(now)
+    try:
+        pipe = redis_client.pipeline()
+        pipe.zremrangebyscore(f"rate:{key}", 0, now - 60)
+        pipe.zcard(f"rate:{key}")
+        pipe.zadd(f"rate:{key}", {str(now): now})
+        pipe.expire(f"rate:{key}", 60)
+        results = pipe.execute()
+        
+        count = results[1]
+        if count >= settings.rate_limit_per_minute:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Rate limit exceeded: {settings.rate_limit_per_minute} req/min",
+                headers={"Retry-After": "60"},
+            )
+    except redis.RedisError as e:
+        logger.error(f"Redis error: {e}")
 
 # ─────────────────────────────────────────────────────────
-# Simple Cost Guard
+# Redis Cost Guard
 # ─────────────────────────────────────────────────────────
-_daily_cost = 0.0
-_cost_reset_day = time.strftime("%Y-%m-%d")
-
-def check_and_record_cost(input_tokens: int, output_tokens: int):
-    global _daily_cost, _cost_reset_day
-    today = time.strftime("%Y-%m-%d")
-    if today != _cost_reset_day:
-        _daily_cost = 0.0
-        _cost_reset_day = today
-    if _daily_cost >= settings.daily_budget_usd:
-        raise HTTPException(503, "Daily budget exhausted. Try tomorrow.")
-    cost = (input_tokens / 1000) * 0.00015 + (output_tokens / 1000) * 0.0006
-    _daily_cost += cost
+def check_and_record_cost(key: str, input_tokens: int, output_tokens: int):
+    month = time.strftime("%Y-%m")
+    cost_key = f"budget:{key}:{month}"
+    
+    try:
+        current_cost = float(redis_client.get(cost_key) or 0.0)
+        if current_cost >= settings.monthly_budget_usd:
+            raise HTTPException(402, "Monthly budget exhausted.")
+        
+        cost = (input_tokens / 1000) * 0.00015 + (output_tokens / 1000) * 0.0006
+        if cost > 0:
+            redis_client.incrbyfloat(cost_key, cost)
+            redis_client.expire(cost_key, 31*24*3600)
+    except redis.RedisError as e:
+        logger.error(f"Redis error: {e}")
 
 # ─────────────────────────────────────────────────────────
 # Auth
@@ -108,9 +117,12 @@ async def lifespan(app: FastAPI):
         "version": settings.app_version,
         "environment": settings.environment,
     }))
-    time.sleep(0.1)  # simulate init
-    _is_ready = True
-    logger.info(json.dumps({"event": "ready"}))
+    try:
+        redis_client.ping()
+        _is_ready = True
+        logger.info(json.dumps({"event": "ready", "redis": "connected"}))
+    except redis.RedisError as e:
+        logger.error(json.dumps({"event": "error", "message": f"Redis connection failed: {e}"}))
 
     yield
 
@@ -145,7 +157,10 @@ async def request_middleware(request: Request, call_next):
         # Security headers
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers.pop("server", None)
+        try:
+            del response.headers["server"]
+        except KeyError:
+            pass
         duration = round((time.time() - start) * 1000, 1)
         logger.info(json.dumps({
             "event": "request",
@@ -201,12 +216,13 @@ async def ask_agent(
 
     **Authentication:** Include header `X-API-Key: <your-key>`
     """
+    user_id = _key[:8]
     # Rate limit per API key
-    check_rate_limit(_key[:8])  # use first 8 chars as key bucket
+    check_rate_limit(user_id)
 
     # Budget check
     input_tokens = len(body.question.split()) * 2
-    check_and_record_cost(input_tokens, 0)
+    check_and_record_cost(user_id, input_tokens, 0)
 
     logger.info(json.dumps({
         "event": "agent_call",
@@ -214,10 +230,26 @@ async def ask_agent(
         "client": str(request.client.host) if request.client else "unknown",
     }))
 
+    # Get conversation history from Redis
+    history_key = f"history:{user_id}"
+    try:
+        history = redis_client.lrange(history_key, 0, -1)
+        history_context = "\n".join(history[-5:]) if history else ""
+    except redis.RedisError:
+        history_context = ""
+
+    # Call LLM (mock)
     answer = llm_ask(body.question)
 
+    # Save to Redis
+    try:
+        redis_client.rpush(history_key, f"User: {body.question}", f"Agent: {answer}")
+        redis_client.expire(history_key, 24 * 3600)
+    except redis.RedisError as e:
+        logger.error(f"Redis error saving history: {e}")
+
     output_tokens = len(answer.split()) * 2
-    check_and_record_cost(0, output_tokens)
+    check_and_record_cost(user_id, 0, output_tokens)
 
     return AskResponse(
         question=body.question,
@@ -254,13 +286,20 @@ def ready():
 @app.get("/metrics", tags=["Operations"])
 def metrics(_key: str = Depends(verify_api_key)):
     """Basic metrics (protected)."""
+    user_id = _key[:8]
+    month = time.strftime("%Y-%m")
+    try:
+        current_cost = float(redis_client.get(f"budget:{user_id}:{month}") or 0.0)
+    except redis.RedisError:
+        current_cost = 0.0
+    
     return {
         "uptime_seconds": round(time.time() - START_TIME, 1),
         "total_requests": _request_count,
         "error_count": _error_count,
-        "daily_cost_usd": round(_daily_cost, 4),
-        "daily_budget_usd": settings.daily_budget_usd,
-        "budget_used_pct": round(_daily_cost / settings.daily_budget_usd * 100, 1),
+        "monthly_cost_usd": round(current_cost, 4),
+        "monthly_budget_usd": settings.monthly_budget_usd,
+        "budget_used_pct": round(current_cost / settings.monthly_budget_usd * 100, 1),
     }
 
 

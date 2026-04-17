@@ -11,13 +11,14 @@ FROM python:3.11
 WORKDIR /app
 
 # Bước 3: Copy requirements TRƯỚC (Docker layer cache)
-COPY 02-docker/develop/requirements.txt .
+COPY requirements.txt .
 
 # Bước 4: Cài dependencies
+RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Bước 5: Copy code vào container
-COPY 02-docker/develop/app.py .
+COPY app.py .
 
 # Bước 6: Copy mock utils (from build context root)
 RUN mkdir -p utils
